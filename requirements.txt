@@ -1,4 +1,4 @@
 # requirements.txt
 Flask
-pytube
+pytube==15.0.0 # Substitua pela versão mais recente
 gunicorn
