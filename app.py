@@ -2,9 +2,11 @@
 import os
 from flask import Flask, render_template, request, send_from_directory, flash, redirect, url_for
 from pytube import YouTube
+# Importando exceções específicas da pytube
+from pytube.exceptions import PytubeError, RegexMatchError, AgeRestrictedError
 from logging.config import dictConfig
 
-# Configuração de logging para vermos os erros no Render
+# ... (a configuração de logging continua a mesma) ...
 dictConfig({
     'version': 1,
     'formatters': {'default': {
@@ -21,13 +23,11 @@ dictConfig({
     }
 })
 
+
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'uma-chave-secreta-muito-forte' # Necessário para usar 'flash'
+app.config['SECRET_KEY'] = 'uma-chave-secreta-muito-forte-e-diferente'
 
-# Define o diretório onde os vídeos serão salvos
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloads")
-
-# Garante que o diretório de downloads exista
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
 
@@ -41,53 +41,50 @@ def index():
 
         try:
             app.logger.info(f"Recebida URL: {video_url}")
-            yt = YouTube(video_url)
+            # Adiciona o uso de um user-agent para parecer mais com um navegador
+            yt = YouTube(video_url, use_oauth=False, allow_oauth_cache=True)
 
-            # --- A Lógica do Full HD (1080p) ---
-            # YouTube geralmente separa vídeo e áudio em altas resoluções (DASH).
-            # Para um arquivo único (progressivo), a maior qualidade é quase sempre 720p.
-            # O código abaixo prioriza a melhor qualidade *com áudio*.
+            app.logger.info(f"Título do vídeo: {yt.title}")
+            app.logger.info(f"Autor: {yt.author}")
 
-            # 1. Tenta pegar o stream de 1080p (sem áudio) e o melhor áudio
-            video_stream = yt.streams.filter(res="1080p", file_extension="mp4", only_video=True).first()
-            audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
+            # Lógica para pegar o melhor stream com áudio (geralmente 720p)
+            stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
             
-            # 2. Se não houver 1080p, pega o melhor stream progressivo (vídeo+áudio)
-            if not video_stream or not audio_stream:
-                app.logger.info("Stream 1080p não encontrado. Buscando o melhor stream progressivo (geralmente 720p).")
-                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-                if not stream:
-                    flash('Nenhum stream MP4 progressivo encontrado para este vídeo.', 'error')
-                    return redirect(url_for('index'))
-            else:
-                # Se tivéssemos FFMPEG, aqui seria o local para juntar os dois.
-                # Como não temos no ambiente Render (por padrão), vamos optar pelo melhor progressivo.
-                app.logger.warning("Ambiente sem FFMPEG. Optando pelo melhor stream progressivo ao invés de juntar 1080p+áudio.")
-                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-
+            if not stream:
+                flash('Nenhum stream de vídeo MP4 com áudio foi encontrado. O vídeo pode ser privado ou de um formato incompatível.', 'error')
+                return redirect(url_for('index'))
 
             app.logger.info(f"Baixando stream: {stream}")
             
-            # Baixa o arquivo para o nosso diretório de downloads
             stream.download(output_path=DOWNLOAD_DIR)
             app.logger.info(f"Download completo: {stream.default_filename}")
 
-            # Passa as informações para a página de sucesso
             return render_template('index.html', 
                                    video_title=yt.title, 
                                    file_name=stream.default_filename)
 
+        # Tratamento de erros específicos da Pytube
+        except RegexMatchError:
+            app.logger.error("RegexMatchError: A Pytube pode estar desatualizada. O YouTube mudou sua interface.")
+            flash('Não foi possível processar o vídeo. A biblioteca Pytube pode estar desatualizada devido a mudanças no YouTube. Tente novamente mais tarde.', 'error')
+        except AgeRestrictedError:
+            app.logger.error("AgeRestrictedError: O vídeo tem restrição de idade.")
+            flash('Este vídeo tem restrição de idade e não pode ser baixado anonimamente.', 'error')
+        except PytubeError as e:
+            app.logger.error(f"Ocorreu um erro da Pytube: {e}")
+            flash(f'Ocorreu um erro específico da biblioteca de download: {e}', 'error')
         except Exception as e:
-            app.logger.error(f"Ocorreu um erro: {e}")
-            flash(f'Ocorreu um erro ao processar o vídeo. Verifique a URL ou tente outro vídeo. Erro: {e}', 'error')
-            return redirect(url_for('index'))
+            app.logger.error(f"Ocorreu um erro genérico: {e}")
+            flash(f'Ocorreu um erro inesperado. Verifique a URL ou tente outro vídeo.', 'error')
+        
+        return redirect(url_for('index'))
 
     return render_template('index.html')
 
 @app.route('/download/<filename>')
 def download_file(filename):
+    # ... (a função de download continua a mesma) ...
     try:
-        # Envia o arquivo do diretório de downloads para o usuário
         return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
     except FileNotFoundError:
         flash('Arquivo não encontrado. Pode ter sido removido do servidor.', 'error')
